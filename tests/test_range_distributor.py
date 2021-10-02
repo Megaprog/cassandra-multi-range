@@ -25,8 +25,10 @@ def test_distribute_by_range_exception():
 
     assert len(result) == 2
     assert result[0] == "a"
-    assert isinstance(result[1], ValueError)
-    assert result[1].args[0] == "b"
+    e = result[1]
+    assert isinstance(e, ValueError)
+    assert e.args[0] == "b"
+    assert e.args[2] == 1
 
 
 def test_distribute_by_range_multiprocessing_exception():
@@ -35,8 +37,10 @@ def test_distribute_by_range_multiprocessing_exception():
 
     assert len(result) == 2
     assert result[0] == "a"
-    assert isinstance(result[1], ValueError)
-    assert result[1].args[0] == "b"
+    e = result[1]
+    assert isinstance(e, ValueError)
+    assert e.args[0] == "b"
+    assert e.args[2] == 1
 
 
 def _validate_range(index: int, low_inc: int, high_inc: int, event: Event):
