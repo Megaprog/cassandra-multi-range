@@ -12,9 +12,6 @@ def multiprocess_logger(dunder_file: str = None, *, filename: str = None):
     handler.setFormatter(formatter)
     new_logger.addHandler(handler)
 
-    if dunder_file:
-        module = os.path.basename(dunder_file).split(".")[0]
-    else:
-        module = filename
-    new_logger.addFilter(lambda r: r.module == module)
+    module = os.path.basename(dunder_file).split(".")[0] if dunder_file else filename
+    new_logger.addFilter(lambda record: record.module == module)
     return new_logger

@@ -8,7 +8,7 @@ from token_range import split_long, token_range_inclusive
 T = TypeVar('T')
 
 
-def distribute_by_range(pool: Pool, n: int, func: Callable[[int, int, int, Event], T]) -> list[Union[T, Exception]]:
+def distribute_by_range(pool: Pool, n: int, func: Callable[[int, int, int, Event], T]) -> list[Union[T, BaseException]]:
     splits = split_long(n)
     with Manager() as manager:
         event = manager.Event()
@@ -16,25 +16,20 @@ def distribute_by_range(pool: Pool, n: int, func: Callable[[int, int, int, Event
                             ((i, *token_range_inclusive(splits, i), event, func) for i in range(n)))
 
 
-def _exception_handler_wrapper(index: int, low_inc: int, high_inc: int, event: Event,
+def _exception_handler_wrapper(process_index: int, low_inc: int, high_inc: int, event: Event,
                                func: Callable[[int, int, int, Event], T]):
     pickling_support.install()
     try:
-        return func(index, low_inc, high_inc, event)
-    except Exception as e:
+        return func(process_index, low_inc, high_inc, event)
+    except BaseException as e:
         event.set()
-        return ExceptionPickleProxy(e, index)
+        e.args += ("Unhandled exception in process number", process_index)
+        return e
 
 
-class ExceptionPickleProxy(Exception):
-    def __init__(self, e: BaseException, process_index: int):
-        super().__init__(*e.args, "Unhandled exception in process number", process_index)
-        self.__cause__ = e
-        self.process_index = process_index
+def validate_result(result: list[Union[T, BaseException]]) -> list[Union[T, BaseException]]:
+    for value in result:
+        if isinstance(value, BaseException):
+            raise value
 
-    def __reduce__(self):
-        return _create_exception_instance, (self.__cause__.__class__, self.args, self.__cause__.__traceback__)
-
-
-def _create_exception_instance(constructor, args, traceback) -> BaseException:
-    return constructor(args).with_traceback(traceback)
+    return result

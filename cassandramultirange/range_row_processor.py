@@ -8,12 +8,15 @@ from typing import TypeVar, Callable, Union, Iterable, Optional
 from cassandra.cluster import Session, ResultSet
 
 from multiprocess_logger import multiprocess_logger
-from range_distributor import distribute_by_range
+from range_distributor import distribute_by_range, validate_result
 
 T = TypeVar('T')
 C = TypeVar('C')
 R = TypeVar('R')
-DEFAULT_LOGGER = object()
+
+
+def _dummy_logger():
+    return Logger("DUMMY")
 
 
 def process_query_by_range(n: int,
@@ -23,17 +26,17 @@ def process_query_by_range(n: int,
                            context_supplier: Union[C, Callable[[], C]] = None,
                            context_consumer: Callable[[C], R] = None,
                            pool: Pool = None,
-                           logger: Logger = DEFAULT_LOGGER,
+                           logger_supplier: Optional[Callable[[], Logger]] = _dummy_logger,
                            log_progress_level: Union[int, str] = logging.DEBUG,
                            log_progress_each: int = 10000,
                            check_event_each: int = None
-                           ) -> list[Union[R, Exception]]:
-    logger = multiprocess_logger(__file__) if logger is DEFAULT_LOGGER else logger
+                           ) -> list[Union[C, R, BaseException]]:
+    logger_supplier = partial(multiprocess_logger, __file__) if logger_supplier is _dummy_logger else logger_supplier
 
     partial_func_wrapper = typing.cast(Callable[[int, int, int, Event], T],
                                        partial(_func_wrapper, session_supplier, result_set_func, row_handler,
-                                               context_supplier, context_consumer,
-                                               logger, log_progress_level, log_progress_each, check_event_each))
+                                               context_supplier, context_consumer, logger_supplier,
+                                               log_progress_level, log_progress_each, check_event_each))
 
     if pool:
         return distribute_by_range(pool, n, partial_func_wrapper)
@@ -47,42 +50,40 @@ def _func_wrapper(session_supplier: Callable[[], Session],
                   row_handler: Callable[[Union[tuple, dict], C, int], C],
                   context_supplier: Union[C, Callable[[], C]],
                   context_consumer: Optional[Callable[[C], R]],
-                  logger: Logger,
+                  logger_supplier: Callable[[], Logger],
                   log_progress_level: Union[int, str],
                   log_progress_each: int,
-                  check_event_each: int,
+                  check_event_each: Optional[int],
                   index: int, low_inc: int, high_inc: int, event: Event
-                  ) -> list[Union[R, Exception]]:
+                  ) -> list[Union[C, R, BaseException]]:
+    logger = logger_supplier()
     session = session_supplier()
     rows = result_set_func(session, low_inc, high_inc)
 
     check_event_each = check_event_each or log_progress_each // 10
-    context = context_supplier() if isinstance(context_supplier, Callable) else context_supplier
+    context = context_supplier() if callable(context_supplier) else context_supplier
     log_progress_counter = 0
     check_event_counter = 0
-    for i, row in enumerate(rows):
+    for i, row in enumerate(rows, 1):
         context = row_handler(row, context, i)
 
         log_progress_counter += 1
         if log_progress_counter == log_progress_each:
             log_progress_counter = 0
             if logger:
-                logger.log(log_progress_level, "%s records processed by %s process with paging state %s",
-                           i + 1, index, rows.paging_state.hex())
+                logger.log(log_progress_level, "%s records processed with paging state %s",
+                           i, rows.paging_state.hex())
 
         check_event_counter += 1
         if check_event_counter == check_event_each:
             check_event_counter = 0
-            if logger:
-                logger.info("Process % has been stopped", index)
-            if event.is_set:
+            if event.is_set():
+                if logger:
+                    logger.info("Process %s has been stopped", index)
                 break
 
     session.cluster.shutdown()
-    if context_consumer:
-        return context_consumer(context)
-    else:
-        return context
+    return context_consumer(context) if context_consumer else context
 
 
 def process_table_by_range(n: int,
@@ -94,11 +95,11 @@ def process_table_by_range(n: int,
                            context_supplier: Union[C, Callable[[], C]] = None,
                            context_consumer: Callable[[C], R] = None,
                            pool: Pool = None,
-                           logger: Logger = DEFAULT_LOGGER,
+                           logger_supplier: Optional[Callable[[], Logger]] = _dummy_logger,
                            log_progress_level: Union[int, str] = logging.DEBUG,
                            log_progress_each: int = 10000,
                            check_event_each: int = None
-                           ) -> list[Union[R, Exception]]:
+                           ) -> list[Union[C, R, BaseException]]:
     if isinstance(partition_key_columns, str):
         key_str = partition_key_columns
     else:
@@ -113,7 +114,7 @@ def process_table_by_range(n: int,
         Callable[[], Session], partial(_wrapped_session_supplier, session_supplier, table_name, key_str, select_str))
 
     return process_query_by_range(n, partial_session_supplier_wrapper, _result_set_func, row_handler,
-                                  context_supplier, context_consumer, pool, logger,
+                                  context_supplier, context_consumer, pool, logger_supplier,
                                   log_progress_level, log_progress_each, check_event_each)
 
 
@@ -134,14 +135,17 @@ def count_table_by_range(n: int,
                          table_name: str,
                          partition_key_columns: Union[str, Iterable[str]],
                          pool: Pool = None,
-                         logger: Logger = DEFAULT_LOGGER,
+                         logger_supplier: Optional[Callable[[], Logger]] = _dummy_logger,
                          log_progress_level: Union[int, str] = logging.DEBUG,
                          log_progress_each: int = 10000,
                          check_event_each: int = None
-                         ) -> list[Union[R, Exception]]:
-    return process_table_by_range(n, session_supplier, table_name, partition_key_columns, _count_row_handler,
-                                  "now()", 0, pool=pool, logger=logger, log_progress_level=log_progress_level,
-                                  log_progress_each=log_progress_each, check_event_each=check_event_each)
+                         ) -> int:
+    result = process_table_by_range(n, session_supplier, table_name, partition_key_columns, _count_row_handler,
+                                    "now()", 0, pool=pool, logger_supplier=logger_supplier,
+                                    log_progress_level=log_progress_level, log_progress_each=log_progress_each,
+                                    check_event_each=check_event_each)
+
+    return sum(validate_result(result))
 
 
 def _count_row_handler(r: Union[tuple, dict], c: int, i: int) -> int:
