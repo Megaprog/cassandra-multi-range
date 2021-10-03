@@ -50,13 +50,13 @@ def _func_wrapper(session_supplier: Callable[[], Session],
                   row_handler: Callable[[Union[tuple, dict], C, int], C],
                   context_supplier: Union[C, Callable[[], C]],
                   context_consumer: Optional[Callable[[C], R]],
-                  logger_supplier: Callable[[], Logger],
+                  logger_supplier: Optional[Callable[[], Logger]],
                   log_progress_level: Union[int, str],
                   log_progress_each: int,
                   check_event_each: Optional[int],
                   index: int, low_inc: int, high_inc: int, event: Event
                   ) -> list[Union[C, R, BaseException]]:
-    logger = logger_supplier()
+    logger = logger_supplier() if logger_supplier else None
     session = session_supplier()
     rows = result_set_func(session, low_inc, high_inc)
 
